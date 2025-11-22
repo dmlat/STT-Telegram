@@ -24,7 +24,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5433:5432"  # Exposed on 5433 to avoid conflict with local postgres if any
+      - "5434:5432"  # Exposed on 5434 to avoid conflict with local postgres if any
 
 volumes:
   postgres_data:

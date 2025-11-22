@@ -12,7 +12,8 @@ async def transcribe_audio(file_path: str) -> str:
         transcript = await client.audio.transcriptions.create(
             model="whisper-1",
             file=audio_file,
-            response_format="text"
+            response_format="text",
+            prompt="Вот пример текста. Он написан грамотно, с точками, запятыми и заглавными буквами."
         )
     
     return transcript
