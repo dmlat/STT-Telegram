@@ -1,0 +1,31 @@
+services:
+  bot:
+    build: .
+    container_name: stt_bot
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/stt_db
+      - GOOGLE_CREDENTIALS_PATH=/app/credentials.json
+    volumes:
+      - .:/app
+    depends_on:
+      - db
+
+  db:
+    image: postgres:15-alpine
+    container_name: stt_db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: stt_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"  # Exposed on 5433 to avoid conflict with local postgres if any
+
+volumes:
+  postgres_data:
+
