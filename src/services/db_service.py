@@ -149,7 +149,7 @@ async def get_user_stats(user_id: int):
         msgs_7d = await session.scalar(stmt_7d) or 0
         
         # Today (Since midnight UTC)
-        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).replace(tzinfo=None)
         stmt_today = select(func.count(VoiceMessage.id)).where(
             VoiceMessage.user_id == user_id,
             VoiceMessage.created_at >= today_start
