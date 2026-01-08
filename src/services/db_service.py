@@ -1,6 +1,6 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy import DateTime, BigInteger, Float, Integer, ForeignKey, func
+from sqlalchemy import DateTime, BigInteger, Float, Integer, ForeignKey, func, String, Text
 from datetime import datetime, timezone
 from src.config import DATABASE_URL
 
@@ -19,11 +19,21 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
     last_activity_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
     
-    # Subscription & Limits
-    is_premium: Mapped[bool] = mapped_column(default=False)
-    premium_until: Mapped[datetime] = mapped_column(DateTime, nullable=True)
-    daily_usage_seconds: Mapped[float] = mapped_column(Float, default=0.0)
-    last_usage_date: Mapped[datetime] = mapped_column(DateTime, default=utc_now) # Storing full datetime but logic uses date
+    # Balance & Usage
+    balance_seconds: Mapped[float] = mapped_column(Float, default=0.0)
+    used_free_seconds: Mapped[float] = mapped_column(Float, default=0.0)
+
+class Transaction(Base):
+    __tablename__ = "transactions"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    provider: Mapped[str] = mapped_column(String) # 'yookassa', 'telegram_stars'
+    amount_rub: Mapped[float] = mapped_column(Float)
+    seconds_added: Mapped[float] = mapped_column(Float)
+    payment_id: Mapped[str] = mapped_column(String, nullable=True) # External ID
+    status: Mapped[str] = mapped_column(String, default="pending") # pending, success, failed
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
 
 class VoiceMessage(Base):
     __tablename__ = "voice_messages"
@@ -32,8 +42,11 @@ class VoiceMessage(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
     duration_seconds: Mapped[float] = mapped_column(Float)
-    transcription_length_chars: Mapped[int] = mapped_column(Integer)
-    processing_time_seconds: Mapped[float] = mapped_column(Float)
+    transcription_length_chars: Mapped[int] = mapped_column(Integer, nullable=True) # Nullable for failed
+    processing_time_seconds: Mapped[float] = mapped_column(Float, nullable=True) # Nullable for failed
+    status: Mapped[str] = mapped_column(String, default="success") # success, failed
+    error_reason: Mapped[str] = mapped_column(String, nullable=True) # compression_failed, too_large, etc.
+    transcription_text: Mapped[str] = mapped_column(Text, nullable=True) # Stored transcription
 
 class Review(Base):
     __tablename__ = "reviews"
@@ -49,6 +62,9 @@ async_session = async_sessionmaker(engine, expire_on_commit=False)
 
 async def init_db():
     async with engine.begin() as conn:
+        # Note: This won't migrate existing tables if columns change. 
+        # In prod we should use alembic, but for now we might need to drop tables manually if schema changes drastically.
+        # Since we are changing User schema significantly, assume we handle it (or use a fresh DB).
         await conn.run_sync(Base.metadata.create_all)
 
 async def get_or_create_user(user_id: int, username: str, first_name: str):
@@ -65,13 +81,16 @@ async def get_or_create_user(user_id: int, username: str, first_name: str):
         await session.commit()
         return user
 
-async def add_voice_message(user_id: int, duration: float, chars: int, process_time: float):
+async def add_voice_message(user_id: int, duration: float, chars: int = 0, process_time: float = 0.0, status: str = "success", error: str = None, text: str = None):
     async with async_session() as session:
         msg = VoiceMessage(
             user_id=user_id,
             duration_seconds=duration,
             transcription_length_chars=chars,
-            processing_time_seconds=process_time
+            processing_time_seconds=process_time,
+            status=status,
+            error_reason=error,
+            transcription_text=text
         )
         session.add(msg)
         
@@ -94,37 +113,72 @@ async def add_review(user_id: int, feedback_type: str, content: str = None):
 
 from sqlalchemy import select
 
-async def check_user_limit(user_id: int, duration: float) -> bool:
-    """Returns True if user can process file, False if limit exceeded."""
+async def check_user_limit(user_id: int, duration: float) -> tuple[bool, float]:
+    """Returns (True, 0) if allowed, (False, missing_seconds) if limit exceeded."""
     async with async_session() as session:
         user = await session.get(User, user_id)
         if not user:
-            return True # New user logic handled elsewhere, or allow first time
+            return True, 0.0 # Allow, will be created later
         
-        if user.is_premium:
-            return True
-            
-        now = utc_now()
+        remaining_free = max(0.0, 300 - user.used_free_seconds)
+        total_available = remaining_free + user.balance_seconds
         
-        # Check if new day (UTC)
-        if user.last_usage_date.date() < now.date():
-            user.daily_usage_seconds = 0.0
-            user.last_usage_date = now
-            await session.commit()
-            
-        # Limit: 10 minutes = 600 seconds
-        if user.daily_usage_seconds + duration > 300:
-            return False
-            
-        return True
+        if total_available >= duration:
+            return True, 0.0
+        else:
+            missing = duration - total_available
+            return False, missing
 
 async def update_user_usage(user_id: int, duration: float):
     async with async_session() as session:
         user = await session.get(User, user_id)
         if user:
-            user.daily_usage_seconds += duration
-            user.last_usage_date = utc_now()
+            remaining_free = max(0, 300 - user.used_free_seconds)
+            
+            if remaining_free > 0:
+                if duration <= remaining_free:
+                    user.used_free_seconds += duration
+                else:
+                    # Consume all free, rest from balance
+                    user.used_free_seconds = 300.0
+                    to_deduct = duration - remaining_free
+                    user.balance_seconds = max(0.0, user.balance_seconds - to_deduct)
+            else:
+                user.balance_seconds = max(0.0, user.balance_seconds - duration)
+                
+            user.last_activity_at = utc_now()
             await session.commit()
+
+async def create_transaction(user_id: int, provider: str, amount: float, seconds: float, payment_id: str = None):
+    async with async_session() as session:
+        tx = Transaction(
+            user_id=user_id,
+            provider=provider,
+            amount_rub=amount,
+            seconds_added=seconds,
+            payment_id=payment_id,
+            status="pending"
+        )
+        session.add(tx)
+        await session.commit()
+        return tx.id
+
+async def get_transaction(tx_id: int):
+    async with async_session() as session:
+        return await session.get(Transaction, tx_id)
+
+async def complete_transaction(tx_id: int, status: str = "success"):
+    async with async_session() as session:
+        tx = await session.get(Transaction, tx_id)
+        if tx and tx.status == "pending":
+            tx.status = status
+            if status == "success":
+                user = await session.get(User, tx.user_id)
+                if user:
+                    user.balance_seconds += tx.seconds_added
+            await session.commit()
+            return True
+        return False
 
 async def get_user_stats(user_id: int):
     async with async_session() as session:
@@ -148,7 +202,7 @@ async def get_user_stats(user_id: int):
         )
         msgs_7d = await session.scalar(stmt_7d) or 0
         
-        # Today (Since midnight UTC)
+        # Today
         today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).replace(tzinfo=None)
         stmt_today = select(func.count(VoiceMessage.id)).where(
             VoiceMessage.user_id == user_id,
@@ -165,6 +219,8 @@ async def get_user_stats(user_id: int):
 
         user = await session.get(User, user_id)
         
+        remaining_free = max(0, 300 - user.used_free_seconds)
+        
         return {
             "user_id": user_id,
             "reg_date": user.created_at,
@@ -175,8 +231,6 @@ async def get_user_stats(user_id: int):
             "msgs_today": msgs_today,
             "avg_length_sec": round(float(avg_length), 2),
             "avg_chars": round(float(avg_chars), 2),
-            "is_premium": user.is_premium,
-            "premium_until": user.premium_until,
-            "daily_usage": round(user.daily_usage_seconds / 60, 2) # in minutes
+            "balance_minutes": round(user.balance_seconds / 60, 1),
+            "free_left_minutes": round(remaining_free / 60, 1)
         }
-

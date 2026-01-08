@@ -24,7 +24,10 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5434:5432"  # Exposed on 5434 to avoid conflict with local postgres if any
+      # Use DB_PORT from .env or default to 5434. 
+      # On production, you can set DB_PORT= to disable external access if preferred (but simpler to just change port).
+      # Or you can bind to localhost only: "127.0.0.1:5434:5432"
+      - "${DB_PORT:-5434}:5432"
 
 volumes:
   postgres_data:
