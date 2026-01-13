@@ -219,6 +219,21 @@ async def get_user_stats(user_id: int):
 
         user = await session.get(User, user_id)
         
+        if not user:
+            return {
+                "user_id": user_id,
+                "reg_date": utc_now(),
+                "last_activity": utc_now(),
+                "total_msgs": 0,
+                "msgs_30d": 0,
+                "msgs_7d": 0,
+                "msgs_today": 0,
+                "avg_length_sec": 0,
+                "avg_chars": 0,
+                "balance_minutes": 0,
+                "free_left_minutes": 5.0 # Default 300 sec
+            }
+
         remaining_free = max(0, 300 - user.used_free_seconds)
         
         return {

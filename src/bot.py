@@ -4,6 +4,8 @@ import os
 import time
 import math
 import mutagen
+import traceback
+from openai import OpenAIError
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command, StateFilter
 from aiogram.types import FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, LabeledPrice, PreCheckoutQuery
@@ -635,10 +637,16 @@ async def handle_audio(message: types.Message, state: FSMContext):
             await message.answer("⚠️ Расшифровка получилась очень длинной (больше лимита Telegram), поэтому отправляю её только файлом 👇")
             await message.answer_document(input_file, caption="Вам понравилась расшифровка?", reply_markup=get_feedback_kb())
 
-    except Exception as e:
-        logging.error(f"Error processing voice: {e}")
+    except OpenAIError as oe:
+        logging.error(f"OpenAI API Error: {oe}")
         await bot.delete_message(chat_id=message.chat.id, message_id=status_msg.message_id)
-        await message.answer("Произошла критическая ошибка.")
+        await message.answer("⚠️ Сервис расшифровки временно недоступен (ошибка API). Попробуйте позже.")
+
+    except Exception as e:
+        logging.error(f"Critical error processing voice: {e}")
+        logging.error(traceback.format_exc())
+        await bot.delete_message(chat_id=message.chat.id, message_id=status_msg.message_id)
+        await message.answer("Произошла внутренняя ошибка сервера. Мы уже разбираемся.")
     
     finally:
         if local_filename and os.path.exists(local_filename):
