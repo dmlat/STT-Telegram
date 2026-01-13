@@ -4,6 +4,11 @@ import ffmpeg
 from openai import AsyncOpenAI
 from src.config import OPENAI_KEY
 
+if not OPENAI_KEY:
+    logging.error("OPENAI_KEY is not set or empty in config!")
+else:
+    logging.info(f"OPENAI_KEY loaded (starts with: {OPENAI_KEY[:5]}...)")
+
 client = AsyncOpenAI(api_key=OPENAI_KEY)
 
 async def compress_audio(input_path: str, output_path: str) -> bool:
