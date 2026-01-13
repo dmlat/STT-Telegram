@@ -11,3 +11,7 @@ SHEET_NAME = "STT"  # Name of the Google Sheet
 
 YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID")
 YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY")
+
+ADMIN_ID = os.getenv("ADMIN_ID")
+if ADMIN_ID:
+    ADMIN_ID = int(ADMIN_ID)

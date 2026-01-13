@@ -61,11 +61,23 @@ engine = create_async_engine(DATABASE_URL, echo=False)
 async_session = async_sessionmaker(engine, expire_on_commit=False)
 
 async def init_db():
-    async with engine.begin() as conn:
-        # Note: This won't migrate existing tables if columns change. 
-        # In prod we should use alembic, but for now we might need to drop tables manually if schema changes drastically.
-        # Since we are changing User schema significantly, assume we handle it (or use a fresh DB).
-        await conn.run_sync(Base.metadata.create_all)
+    retries = 5
+    while retries > 0:
+        try:
+            async with engine.begin() as conn:
+                # Note: This won't migrate existing tables if columns change. 
+                # In prod we should use alembic, but for now we might need to drop tables manually if schema changes drastically.
+                # Since we are changing User schema significantly, assume we handle it (or use a fresh DB).
+                await conn.run_sync(Base.metadata.create_all)
+            return
+        except Exception as e:
+            retries -= 1
+            if retries == 0:
+                raise e
+            import asyncio
+            import logging
+            logging.warning(f"Database not ready, retrying in 5 seconds... ({retries} attempts left)")
+            await asyncio.sleep(5)
 
 async def get_or_create_user(user_id: int, username: str, first_name: str):
     async with async_session() as session:

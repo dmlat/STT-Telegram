@@ -11,7 +11,7 @@ from aiogram.filters import Command, StateFilter
 from aiogram.types import FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, LabeledPrice, PreCheckoutQuery
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
-from src.config import BOT_TOKEN, YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY
+from src.config import BOT_TOKEN, YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY, ADMIN_ID
 from src.services.db_service import (
     init_db, get_or_create_user, add_voice_message, get_user_stats, 
     add_review, check_user_limit, update_user_usage, 
@@ -176,6 +176,18 @@ async def menu_suggestions(message: types.Message, state: FSMContext):
     await state.update_data(start_time=time.time())
     await state.set_state(FeedbackState.waiting_for_suggestion)
 
+def format_minutes(minutes: float) -> str:
+    """Formats float minutes (e.g. 4.9) to '4 мин 54 сек'"""
+    total_seconds = int(round(minutes * 60))
+    m = total_seconds // 60
+    s = total_seconds % 60
+    if m > 0 and s > 0:
+        return f"{m} мин {s} сек"
+    elif m > 0:
+        return f"{m} мин"
+    else:
+        return f"{s} сек"
+
 @dp.message(F.text == "💎 Мой баланс / Купить")
 async def menu_balance(message: types.Message):
     user_id = message.from_user.id
@@ -184,10 +196,13 @@ async def menu_balance(message: types.Message):
     balance_min = stats.get("balance_minutes", 0)
     free_min = stats.get("free_left_minutes", 0)
     
+    balance_str = format_minutes(balance_min)
+    free_str = format_minutes(free_min)
+    
     text = (
         f"👤 **Ваш баланс:**\n"
-        f"🟢 Куплено: **{balance_min} мин**\n"
-        f"🎁 Бесплатно: **{free_min} мин**\n\n"
+        f"🟢 Куплено: **{balance_str}**\n"
+        f"🎁 Бесплатно: **{free_str}**\n\n"
     )
     
     # Check if payment credentials exist
@@ -641,12 +656,26 @@ async def handle_audio(message: types.Message, state: FSMContext):
         logging.error(f"OpenAI API Error: {oe}")
         await bot.delete_message(chat_id=message.chat.id, message_id=status_msg.message_id)
         await message.answer("⚠️ Сервис расшифровки временно недоступен (ошибка API). Попробуйте позже.")
+        
+        if ADMIN_ID:
+            await bot.send_message(
+                ADMIN_ID,
+                f"🚨 **OpenAI Error**\nUser: {user.id} (@{user.username})\nError: `{oe}`"
+            )
 
     except Exception as e:
         logging.error(f"Critical error processing voice: {e}")
         logging.error(traceback.format_exc())
         await bot.delete_message(chat_id=message.chat.id, message_id=status_msg.message_id)
         await message.answer("Произошла внутренняя ошибка сервера. Мы уже разбираемся.")
+        
+        if ADMIN_ID:
+            tb = traceback.format_exc()[-1000:] # Last 1000 chars
+            await bot.send_message(
+                ADMIN_ID,
+                f"🚨 **Critical Error**\nUser: {user.id} (@{user.username})\nError: `{e}`\nTrace:\n`{tb}`",
+                parse_mode="Markdown"
+            )
     
     finally:
         if local_filename and os.path.exists(local_filename):
