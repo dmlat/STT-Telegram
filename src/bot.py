@@ -717,6 +717,12 @@ async def feedback_reason(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_caption(caption="Спасибо, мы учтём это! 🛠")
     await callback.answer()
 
+# --- Catch-all for text messages ---
+@dp.message(F.text)
+async def handle_any_text(message: types.Message):
+    # This handler catches any text message that didn't match previous filters
+    await message.answer("Просто пришлите мне аудиофайл или голосовое сообщение!", reply_markup=get_main_menu_kb())
+
 async def main():
     await init_db()
     gs_service.connect()
