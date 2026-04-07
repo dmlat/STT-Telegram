@@ -28,6 +28,10 @@
 
 После успешной проверки тег **не удалять** (рекомендация Яндекса).
 
+## Google Search Console
+
+Подтверждение через HTML-файл: в корне сайта (и в [`landing/`](landing/) на `main`) должен лежать [`google9be8855c40e4f8d7.html`](landing/google9be8855c40e4f8d7.html), доступный по адресу `https://golosvtekst.ru/google9be8855c40e4f8d7.html`. Файл **не удалять** после успешной проверки.
+
 ## Бот (локально)
 
 См. [`docker-compose.yml`](docker-compose.yml): сервис `bot` и PostgreSQL. Переменные окружения — в `.env` (шаблон не коммитится).
