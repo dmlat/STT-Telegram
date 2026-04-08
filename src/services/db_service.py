@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Optional
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy import DateTime, BigInteger, Float, Integer, ForeignKey, func, String, Text
@@ -39,7 +40,7 @@ class Transaction(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
     # Purchased pool (FIFO refund / usage); set to seconds_added when status becomes success
     seconds_remaining: Mapped[float] = mapped_column(Float, default=0.0)
-    invoice_payload: Mapped[str | None] = mapped_column(String, nullable=True)
+    invoice_payload: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     # Telegram Stars refund lifecycle (only meaningful for provider telegram_stars)
     stars_refund_status: Mapped[str] = mapped_column(String, default="none")  # none, refunded, failed
 
@@ -201,8 +202,8 @@ async def create_transaction(
     provider: str,
     amount: float,
     seconds: float,
-    payment_id: str | None = None,
-    invoice_payload: str | None = None,
+    payment_id: Optional[str] = None,
+    invoice_payload: Optional[str] = None,
 ):
     async with async_session() as session:
         tx = Transaction(
