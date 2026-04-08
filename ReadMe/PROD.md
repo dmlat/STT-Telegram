@@ -63,6 +63,26 @@
 
 **Payload инвойса:** `buy_{минуты}_{цена_₽}` — парсится в [`parse_stars_invoice_payload`](../src/services/stars_invoice.py) через `split("_", 2)`.
 
+**Учёт Stars в БД:** в `transactions` для `provider = telegram_stars` сохраняется:
+
+- `stars_amount` — фактически списанное число Stars из `SuccessfulPayment.total_amount` (валюта XTR в Bot API);
+- `amount_rub`, `seconds_added` — из payload (листовая цена ₽ и минуты пакета);
+- `invoice_payload` — исходная строка чека.
+
+Для **YooKassa** и **manual** поле `stars_amount = 0`.
+
+**Сводка выручки в Stars (пример SQL):**
+
+```sql
+SELECT COALESCE(SUM(stars_amount), 0) AS stars_total
+FROM transactions
+WHERE provider = 'telegram_stars' AND status = 'success' AND stars_refund_status <> 'refunded';
+```
+
+Строки со статусом `refunded` после успешного возврата в Telegram не должны входить в «заработанные» Stars (их можно исключить условием выше или учитывать отдельно).
+
+Миграция колонки: [`scripts/migrations/002_transaction_stars_amount.sql`](../scripts/migrations/002_transaction_stars_amount.sql).
+
 **Исправление 2026-04 (кастомный тариф):** после ввода минут в «Свой тариф» FSM оставался в `waiting_for_custom_minutes` и перехватывал служебное сообщение об оплате раньше, чем `successful_payment`. В результате Stars списывались, а минуты не начислялись. Сейчас: ввод минут только при `F.text`, после показа кнопок оплаты вызывается `state.set_state(None)` (данные `minutes`/`amount` сохраняются для инвойса). После успешной оплаты — `get_or_create_user` перед транзакцией и `state.clear()` в обработчике.
 
 **Если оплата прошла, а баланс не изменился:** проверьте логи на `Stars payment`. Ручное начисление:
@@ -72,7 +92,7 @@
 
 ### Миграция БД (FIFO и refund)
 
-Для существующей PostgreSQL один раз выполните [`scripts/migrations/001_stars_refund_fifo.sql`](../scripts/migrations/001_stars_refund_fifo.sql) **до** перезапуска бота с новым кодом.
+Для существующей PostgreSQL выполните по порядку [`001_stars_refund_fifo.sql`](../scripts/migrations/001_stars_refund_fifo.sql), затем при необходимости [`002_transaction_stars_amount.sql`](../scripts/migrations/002_transaction_stars_amount.sql) **до** перезапуска бота с кодом, который эти поля использует.
 
 Автоматический backfill `seconds_remaining = seconds_added` для старых строк **может быть неточным**, если часть купленного баланса уже была израсходована. В сомнительных случаях не включайте закомментированный `UPDATE` в SQL; новые покупки после деплоя получат корректный учёт.
 

@@ -442,6 +442,18 @@ async def successful_payment_handler(message: types.Message, state: FSMContext):
         u = message.from_user
         await get_or_create_user(u.id, u.username or "", u.first_name or "")
 
+        # total_amount: для валюты XTR — фактически списанное число Stars (Bot API)
+        stars_paid = int(payment_info.total_amount)
+        expected_stars = rub_price_to_stars(int(amount_rub))
+        if stars_paid != expected_stars:
+            logging.warning(
+                "Stars paid (%s) != expected from tariff (%s); payload=%r user=%s",
+                stars_paid,
+                expected_stars,
+                payload,
+                u.id,
+            )
+
         tx_id = await create_transaction(
             user_id=u.id,
             provider="telegram_stars",
@@ -449,6 +461,7 @@ async def successful_payment_handler(message: types.Message, state: FSMContext):
             seconds=minutes * 60,
             payment_id=payment_info.telegram_payment_charge_id,
             invoice_payload=payload,
+            stars_amount=stars_paid,
         )
         ok = await complete_transaction(tx_id, "success")
         if not ok:

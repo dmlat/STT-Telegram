@@ -35,6 +35,8 @@ class Transaction(Base):
     provider: Mapped[str] = mapped_column(String) # 'yookassa', 'telegram_stars', 'manual'
     amount_rub: Mapped[float] = mapped_column(Float)
     seconds_added: Mapped[float] = mapped_column(Float)
+    # Telegram XTR: SuccessfulPayment.total_amount (число Stars по чеку); 0 для YooKassa/manual
+    stars_amount: Mapped[int] = mapped_column(Integer, default=0)
     payment_id: Mapped[str] = mapped_column(String, nullable=True) # External ID
     status: Mapped[str] = mapped_column(String, default="pending") # pending, success, failed
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
@@ -204,6 +206,7 @@ async def create_transaction(
     seconds: float,
     payment_id: Optional[str] = None,
     invoice_payload: Optional[str] = None,
+    stars_amount: int = 0,
 ):
     async with async_session() as session:
         tx = Transaction(
@@ -211,6 +214,7 @@ async def create_transaction(
             provider=provider,
             amount_rub=amount,
             seconds_added=seconds,
+            stars_amount=stars_amount,
             payment_id=payment_id,
             status="pending",
             seconds_remaining=0.0,
@@ -280,6 +284,7 @@ async def add_balance_seconds(user_id: int, seconds: float) -> bool:
             provider="manual",
             amount_rub=0.0,
             seconds_added=seconds,
+            stars_amount=0,
             seconds_remaining=seconds,
             payment_id=None,
             status="success",
