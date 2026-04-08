@@ -64,6 +64,10 @@ def _is_admin(user_id: int) -> bool:
     return ADMIN_ID is not None and user_id == ADMIN_ID
 
 
+def _yookassa_configured() -> bool:
+    return bool(YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY)
+
+
 # --- Keyboards ---
 def get_main_menu_kb():
     return ReplyKeyboardMarkup(
@@ -90,11 +94,12 @@ def get_tariffs_kb():
 
 def get_payment_method_kb(amount_rub: int):
     stars = rub_price_to_stars(amount_rub)
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"YooKassa ({amount_rub} ₽)", callback_data="pay_method_yookassa")],
-        [InlineKeyboardButton(text=f"Telegram Stars ({stars} ⭐)", callback_data=f"pay_method_stars_{stars}")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="payment_back_to_tariffs")],
-    ])
+    rows = []
+    if _yookassa_configured():
+        rows.append([InlineKeyboardButton(text=f"YooKassa ({amount_rub} ₽)", callback_data="pay_method_yookassa")])
+    rows.append([InlineKeyboardButton(text=f"Telegram Stars ({stars} ⭐)", callback_data=f"pay_method_stars_{stars}")])
+    rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="payment_back_to_tariffs")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def get_check_payment_kb(payment_id: str, url: str):
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -229,19 +234,13 @@ async def menu_balance(message: types.Message):
         f"🟢 Куплено: **{balance_str}**\n"
         f"🎁 Бесплатно: **{free_str}**\n\n"
     )
-    
-    # Check if payment credentials exist
-    if not YOOKASSA_SHOP_ID or not YOOKASSA_SECRET_KEY:
+    if not _yookassa_configured():
         text += (
-            "ℹ️ **Сейчас работает только бесплатный тариф.**\n"
-            "Вы можете использовать бесплатные минуты для проверки качества.\n"
-            "Прием платежей будет включен в ближайшее время."
+            "💫 **Оплата пакетов:** через **Telegram Stars**.\n"
+            "Оплата картой (YooKassa) появится позже.\n\n"
         )
-        # Don't show tariffs KB
-        await message.answer(text, parse_mode="Markdown")
-    else:
-        text += "👇 Пополнить баланс:"
-        await message.answer(text, reply_markup=get_tariffs_kb(), parse_mode="Markdown")
+    text += "👇 Пополнить баланс:"
+    await message.answer(text, reply_markup=get_tariffs_kb(), parse_mode="Markdown")
 
 # --- Payment Logic ---
 
@@ -315,6 +314,10 @@ async def close_payment(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "pay_method_yookassa")
 async def pay_yookassa(callback: types.CallbackQuery, state: FSMContext):
+    if not _yookassa_configured():
+        await callback.answer("Оплата картой сейчас недоступна. Используйте Telegram Stars.", show_alert=True)
+        return
+
     data = await state.get_data()
     amount = data.get("amount")
     minutes = data.get("minutes")

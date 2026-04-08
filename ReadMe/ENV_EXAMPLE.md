@@ -21,7 +21,7 @@ OPENAI_KEY=
 # Google Sheets (опционально)
 GOOGLE_CREDENTIALS_PATH=credentials.json
 
-# YooKassa (если пусто — в боте только бесплатный тариф и Stars)
+# YooKassa (опционально; если пусто — оплата только Telegram Stars, тарифы всё равно доступны)
 YOOKASSA_SHOP_ID=
 YOOKASSA_SECRET_KEY=
 
