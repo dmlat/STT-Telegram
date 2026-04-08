@@ -59,6 +59,49 @@
 
 ---
 
+## Telegram Stars: начисление минут
+
+**Payload инвойса:** `buy_{минуты}_{цена_₽}` — парсится в [`parse_stars_invoice_payload`](../src/services/stars_invoice.py) через `split("_", 2)`.
+
+**Исправление 2026-04 (кастомный тариф):** после ввода минут в «Свой тариф» FSM оставался в `waiting_for_custom_minutes` и перехватывал служебное сообщение об оплате раньше, чем `successful_payment`. В результате Stars списывались, а минуты не начислялись. Сейчас: ввод минут только при `F.text`, после показа кнопок оплаты вызывается `state.set_state(None)` (данные `minutes`/`amount` сохраняются для инвойса). После успешной оплаты — `get_or_create_user` перед транзакцией и `state.clear()` в обработчике.
+
+**Если оплата прошла, а баланс не изменился:** проверьте логи на `Stars payment`. Ручное начисление:
+
+- Команда (только `ADMIN_ID`): `/admin_add_balance <telegram_user_id> <секунды>` (5 мин = `300`).
+- SQL (если удобнее на сервере): `UPDATE users SET balance_seconds = balance_seconds + 300 WHERE id = <telegram_user_id>;`
+
+### Миграция БД (FIFO и refund)
+
+Для существующей PostgreSQL один раз выполните [`scripts/migrations/001_stars_refund_fifo.sql`](../scripts/migrations/001_stars_refund_fifo.sql) **до** перезапуска бота с новым кодом.
+
+Автоматический backfill `seconds_remaining = seconds_added` для старых строк **может быть неточным**, если часть купленного баланса уже была израсходована. В сомнительных случаях не включайте закомментированный `UPDATE` в SQL; новые покупки после деплоя получат корректный учёт.
+
+---
+
+## Возврат Telegram Stars (`refundStarPayment`)
+
+Telegram позволяет боту вернуть **целиком** оплату в Stars по идентификатору платежа ([`refundStarPayment`](https://core.telegram.org/bots/api#refundstarpayment)). Частичный refund в Stars **не поддерживается** — возвращать можно только пользователям, которые **не потратили купленные секунды по этой покупке** (в коде: `seconds_remaining >= seconds_added` для строки `transactions`).
+
+**Идентификатор платежа:** `SuccessfulPayment.telegram_payment_charge_id` — сохраняется в `transactions.payment_id`; тот же id используется в `getStarTransactions` для сверки.
+
+**Поток в приложении:**
+
+1. При успешной оплате Stars создаётся строка `transactions` с `provider = telegram_stars`, `invoice_payload`, после `complete_transaction` выставляется `seconds_remaining = seconds_added`.
+2. При расходе минут на расшифровку списание с купленного баланса идёт **FIFO** по успешным покупкам (поле `seconds_remaining`), см. [`src/services/db_service.py`](../src/services/db_service.py) и [`src/services/purchased_fifo.py`](../src/services/purchased_fifo.py).
+3. Возврат: вызов `await bot.refund_star_payment(user_id=..., telegram_payment_charge_id=...)` ([`stars_refund_service.py`](../src/services/stars_refund_service.py)), затем в БД: уменьшение `users.balance_seconds` на остаток пакета, `seconds_remaining = 0`, `stars_refund_status = refunded`.
+4. Повторный возврат того же платежа в Telegram даёт ошибку (например `CHARGE_ALREADY_REFUNDED`); обработчик трактует это как успех и синхронизирует БД, если ещё не помечено.
+
+**Команды (только `ADMIN_ID`):**
+
+| Команда | Действие |
+|---------|----------|
+| `/admin_refund_stars <transaction_id>` | Полный refund по внутреннему id строки в `transactions`. |
+| `/admin_refund_stars_charge <telegram_user_id> <telegram_payment_charge_id>` | То же по id из чека Telegram, если известны пользователь и charge id. |
+
+Ручное начисление без Stars: `/admin_add_balance` создаёт ещё и строку с `provider = manual` для FIFO; **возврат Stars** относится только к `telegram_stars`.
+
+---
+
 ## Бесплатный лимит
 
 До **5 минут** аудио суммарно **на аккаунт** (один раз на пробу), без ежедневного сброса — см. логику в [`src/services/db_service.py`](../src/services/db_service.py) (`used_free_seconds`, лимит 300 сек).

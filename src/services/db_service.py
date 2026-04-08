@@ -1,3 +1,4 @@
+import logging
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy import DateTime, BigInteger, Float, Integer, ForeignKey, func, String, Text
@@ -28,12 +29,17 @@ class Transaction(Base):
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
-    provider: Mapped[str] = mapped_column(String) # 'yookassa', 'telegram_stars'
+    provider: Mapped[str] = mapped_column(String) # 'yookassa', 'telegram_stars', 'manual'
     amount_rub: Mapped[float] = mapped_column(Float)
     seconds_added: Mapped[float] = mapped_column(Float)
     payment_id: Mapped[str] = mapped_column(String, nullable=True) # External ID
     status: Mapped[str] = mapped_column(String, default="pending") # pending, success, failed
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
+    # Purchased pool (FIFO refund / usage); set to seconds_added when status becomes success
+    seconds_remaining: Mapped[float] = mapped_column(Float, default=0.0)
+    invoice_payload: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Telegram Stars refund lifecycle (only meaningful for provider telegram_stars)
+    stars_refund_status: Mapped[str] = mapped_column(String, default="none")  # none, refunded, failed
 
 class VoiceMessage(Base):
     __tablename__ = "voice_messages"
@@ -125,6 +131,8 @@ async def add_review(user_id: int, feedback_type: str, content: str = None):
 
 from sqlalchemy import select
 
+from src.services.purchased_fifo import fifo_allocate
+
 async def check_user_limit(user_id: int, duration: float) -> tuple[bool, float]:
     """Returns (True, 0) if allowed, (False, missing_seconds) if limit exceeded."""
     async with async_session() as session:
@@ -155,13 +163,45 @@ async def update_user_usage(user_id: int, duration: float):
                     user.used_free_seconds = 300.0
                     to_deduct = duration - remaining_free
                     user.balance_seconds = max(0.0, user.balance_seconds - to_deduct)
+                    await _apply_fifo_deduct(session, user_id, to_deduct)
             else:
-                user.balance_seconds = max(0.0, user.balance_seconds - duration)
+                to_deduct = duration
+                user.balance_seconds = max(0.0, user.balance_seconds - to_deduct)
+                await _apply_fifo_deduct(session, user_id, to_deduct)
                 
             user.last_activity_at = utc_now()
             await session.commit()
 
-async def create_transaction(user_id: int, provider: str, amount: float, seconds: float, payment_id: str = None):
+
+async def _apply_fifo_deduct(session, user_id: int, amount: float) -> None:
+    """Reduce seconds_remaining on successful purchase rows, oldest first."""
+    if amount <= 0:
+        return
+    stmt = (
+        select(Transaction.id, Transaction.seconds_remaining)
+        .where(
+            Transaction.user_id == user_id,
+            Transaction.status == "success",
+            Transaction.seconds_remaining > 0,
+        )
+        .order_by(Transaction.id.asc())
+    )
+    rows = (await session.execute(stmt)).all()
+    buckets = [(r[0], float(r[1])) for r in rows]
+    plan = fifo_allocate(buckets, amount)
+    for tx_id, take in plan:
+        tx = await session.get(Transaction, tx_id)
+        if tx:
+            tx.seconds_remaining = max(0.0, tx.seconds_remaining - take)
+
+async def create_transaction(
+    user_id: int,
+    provider: str,
+    amount: float,
+    seconds: float,
+    payment_id: str | None = None,
+    invoice_payload: str | None = None,
+):
     async with async_session() as session:
         tx = Transaction(
             user_id=user_id,
@@ -169,7 +209,10 @@ async def create_transaction(user_id: int, provider: str, amount: float, seconds
             amount_rub=amount,
             seconds_added=seconds,
             payment_id=payment_id,
-            status="pending"
+            status="pending",
+            seconds_remaining=0.0,
+            invoice_payload=invoice_payload,
+            stars_refund_status="none",
         )
         session.add(tx)
         await session.commit()
@@ -178,6 +221,19 @@ async def create_transaction(user_id: int, provider: str, amount: float, seconds
 async def get_transaction(tx_id: int):
     async with async_session() as session:
         return await session.get(Transaction, tx_id)
+
+
+async def get_transaction_by_payment_id(user_id: int, payment_id: str):
+    async with async_session() as session:
+        stmt = (
+            select(Transaction)
+            .where(
+                Transaction.user_id == user_id,
+                Transaction.payment_id == payment_id,
+            )
+            .limit(1)
+        )
+        return (await session.execute(stmt)).scalar_one_or_none()
 
 
 async def get_all_user_ids() -> list[int]:
@@ -194,12 +250,43 @@ async def complete_transaction(tx_id: int, status: str = "success"):
         if tx and tx.status == "pending":
             tx.status = status
             if status == "success":
+                tx.seconds_remaining = tx.seconds_added
                 user = await session.get(User, tx.user_id)
                 if user:
                     user.balance_seconds += tx.seconds_added
+                else:
+                    logging.warning(
+                        "complete_transaction: user %s missing, balance not updated (tx_id=%s)",
+                        tx.user_id,
+                        tx_id,
+                    )
             await session.commit()
             return True
         return False
+
+
+async def add_balance_seconds(user_id: int, seconds: float) -> bool:
+    """Manual credit (support): increases balance and records a FIFO bucket row."""
+    async with async_session() as session:
+        user = await session.get(User, user_id)
+        if not user:
+            return False
+        user.balance_seconds += seconds
+        tx = Transaction(
+            user_id=user_id,
+            provider="manual",
+            amount_rub=0.0,
+            seconds_added=seconds,
+            seconds_remaining=seconds,
+            payment_id=None,
+            status="success",
+            invoice_payload=None,
+            stars_refund_status="none",
+        )
+        session.add(tx)
+        await session.commit()
+        return True
+
 
 async def get_user_stats(user_id: int):
     async with async_session() as session:

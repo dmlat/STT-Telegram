@@ -4,7 +4,7 @@
 
 ## Операторская документация
 
-- [ReadMe/PROD.md](ReadMe/PROD.md) — тарифы, Stars, маржа, рассылка
+- [ReadMe/PROD.md](ReadMe/PROD.md) — тарифы, Stars, маржа, рассылка, возврат Stars (`refundStarPayment`), FIFO баланса
 - [ReadMe/DEPLOY.md](ReadMe/DEPLOY.md) — Docker, обновление бота, деплой лендинга на GitHub Pages
 - [ReadMe/ENV_EXAMPLE.md](ReadMe/ENV_EXAMPLE.md) — пример `.env`
 

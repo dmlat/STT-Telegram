@@ -17,9 +17,15 @@ from src.services.db_service import (
     init_db, get_or_create_user, add_voice_message, get_user_stats,
     add_review, check_user_limit, update_user_usage,
     create_transaction, complete_transaction, get_transaction, get_all_user_ids,
+    add_balance_seconds,
 )
 from src.services.google_sheets_service import gs_service
 from src.services.openai_service import transcribe_audio
+from src.services.stars_invoice import parse_stars_invoice_payload
+from src.services.stars_refund_service import (
+    refund_telegram_stars_by_charge_id,
+    refund_telegram_stars_by_tx_id,
+)
 from src.services.payment_service import (
     get_tariff_price,
     rub_price_to_stars,
@@ -271,7 +277,7 @@ async def process_tariff_selection(callback: types.CallbackQuery, state: FSMCont
     )
     await callback.answer()
 
-@dp.message(PaymentState.waiting_for_custom_minutes)
+@dp.message(PaymentState.waiting_for_custom_minutes, F.text)
 async def process_custom_minutes(message: types.Message, state: FSMContext):
     if message.text == "🔙 Назад":
         await state.clear()
@@ -296,7 +302,9 @@ async def process_custom_minutes(message: types.Message, state: FSMContext):
         reply_markup=get_payment_method_kb(price),
         parse_mode="Markdown"
     )
-    
+    # Leave FSM step so successful_payment is not intercepted by this handler (custom tariff + Stars).
+    await state.set_state(None)
+
 @dp.callback_query(F.data == "payment_back_to_tariffs")
 async def back_to_tariffs(callback: types.CallbackQuery, state: FSMContext):
     await state.clear() # Clear potential custom input state
@@ -417,30 +425,58 @@ async def pre_checkout_handler(pre_checkout_query: PreCheckoutQuery):
     await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
 
 @dp.message(F.successful_payment)
-async def successful_payment_handler(message: types.Message):
-    payment_info = message.successful_payment
-    payload = payment_info.invoice_payload # "buy_{minutes}_{rub}"
-    
-    parts = payload.split("_")
-    minutes = int(parts[1])
-    amount_rub = float(parts[2])
-    
-    # Create and complete transaction
-    tx_id = await create_transaction(
-        user_id=message.from_user.id,
-        provider="telegram_stars",
-        amount=amount_rub,
-        seconds=minutes * 60,
-        payment_id=payment_info.telegram_payment_charge_id
-    )
-    
-    await complete_transaction(tx_id, "success")
-    
-    await message.answer(
-        f"✅ **Оплата прошла успешно!**\n"
-        f"На ваш баланс начислено **{minutes} минут**.",
-        parse_mode="Markdown"
-    )
+async def successful_payment_handler(message: types.Message, state: FSMContext):
+    try:
+        payment_info = message.successful_payment
+        payload = payment_info.invoice_payload
+
+        try:
+            minutes, amount_rub = parse_stars_invoice_payload(payload)
+        except (ValueError, TypeError) as e:
+            logging.exception("Stars payment: bad invoice_payload %r: %s", payload, e)
+            await message.answer(
+                "Оплата прошла, но не удалось разобрать чек. Напишите в поддержку с временем оплаты.",
+            )
+            return
+
+        u = message.from_user
+        await get_or_create_user(u.id, u.username or "", u.first_name or "")
+
+        tx_id = await create_transaction(
+            user_id=u.id,
+            provider="telegram_stars",
+            amount=amount_rub,
+            seconds=minutes * 60,
+            payment_id=payment_info.telegram_payment_charge_id,
+            invoice_payload=payload,
+        )
+        ok = await complete_transaction(tx_id, "success")
+        if not ok:
+            logging.error(
+                "Stars payment: complete_transaction returned False (tx_id=%s, user=%s)",
+                tx_id,
+                u.id,
+            )
+            await message.answer(
+                "Оплата получена; начисление не применено (конфликт статуса). Обратитесь в поддержку.",
+            )
+            return
+
+        await message.answer(
+            f"✅ **Оплата прошла успешно!**\n"
+            f"На ваш баланс начислено **{minutes} минут**.",
+            parse_mode="Markdown",
+        )
+    except Exception:
+        logging.exception(
+            "Stars payment: create/complete failed for user %s",
+            message.from_user.id,
+        )
+        await message.answer(
+            "Оплата прошла, но начисление временно не удалось. Напишите в поддержку.",
+        )
+    finally:
+        await state.clear()
 
 
 # --- Admin broadcast (see ReadMe/PROD.md) ---
@@ -482,6 +518,81 @@ async def cmd_cancel_broadcast(message: types.Message, state: FSMContext):
         return
     await state.clear()
     await message.answer("Рассылка отменена.")
+
+
+@dp.message(Command("admin_refund_stars"))
+async def cmd_admin_refund_stars(message: types.Message, bot: Bot):
+    """Полный refund Stars по id строки transactions (только ADMIN_ID)."""
+    if not _is_admin(message.from_user.id):
+        return
+    parts = (message.text or "").split()
+    if len(parts) != 2:
+        await message.answer("Использование: /admin_refund_stars <transaction_id>")
+        return
+    try:
+        tx_id = int(parts[1])
+    except ValueError:
+        await message.answer("Некорректный transaction_id.")
+        return
+    ok, text = await refund_telegram_stars_by_tx_id(bot, tx_id)
+    prefix = "✅ " if ok else "❌ "
+    await message.answer(prefix + text)
+
+
+@dp.message(Command("admin_refund_stars_charge"))
+async def cmd_admin_refund_stars_charge(message: types.Message, bot: Bot):
+    """Refund по user_id и telegram_payment_charge_id из чека."""
+    if not _is_admin(message.from_user.id):
+        return
+    parts = (message.text or "").split()
+    if len(parts) != 3:
+        await message.answer(
+            "Использование: /admin_refund_stars_charge <telegram_user_id> <telegram_payment_charge_id>"
+        )
+        return
+    try:
+        uid = int(parts[1])
+        charge_id = parts[2].strip()
+    except ValueError:
+        await message.answer("Некорректный user_id.")
+        return
+    if not charge_id:
+        await message.answer("Пустой charge_id.")
+        return
+    ok, text = await refund_telegram_stars_by_charge_id(bot, uid, charge_id)
+    prefix = "✅ " if ok else "❌ "
+    await message.answer(prefix + text)
+
+
+@dp.message(Command("admin_add_balance"))
+async def cmd_admin_add_balance(message: types.Message):
+    """Ручное начисление купленных секунд (только ADMIN_ID). См. ReadMe/PROD.md."""
+    if not _is_admin(message.from_user.id):
+        return
+    parts = (message.text or "").split()
+    if len(parts) != 3:
+        await message.answer(
+            "Использование: /admin_add_balance <telegram_user_id> <секунды>\n"
+            "Пример: /admin_add_balance 123456789 300"
+        )
+        return
+    try:
+        uid = int(parts[1])
+        seconds = float(parts[2])
+    except ValueError:
+        await message.answer("Некорректные числа.")
+        return
+    ok = await add_balance_seconds(uid, seconds)
+    if ok:
+        await message.answer(
+            f"Начислено **{seconds}** сек пользователю `{uid}`.",
+            parse_mode="Markdown",
+        )
+    else:
+        await message.answer(
+            f"Пользователь `{uid}` не найден в БД (нужен хотя бы /start).",
+            parse_mode="Markdown",
+        )
 
 
 @dp.message(

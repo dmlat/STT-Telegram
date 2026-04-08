@@ -8,3 +8,4 @@ python-dotenv>=1.0.1
 yookassa>=3.3.0
 mutagen>=1.47.0
 ffmpeg-python>=0.2.0
+pytest>=8.0.0
