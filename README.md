@@ -34,6 +34,8 @@
 
 После успешной проверки тег **не удалять** (рекомендация Яндекса).
 
+Для индексации: в [`landing/sitemap.xml`](landing/sitemap.xml) перечислены публичные URL; [`landing/robots.txt`](landing/robots.txt) указывает на карту сайта (`Sitemap: https://golosvtekst.ru/sitemap.xml`). После публикации на GitHub Pages добавьте в Вебмастере адрес `https://golosvtekst.ru/sitemap.xml` (раздел «Файлы Sitemap»).
+
 ## Яндекс.Метрика
 
 На всех страницах лендинга в `<head>` подключён счётчик **108441396** (вебвизор, карта кликов, `dataLayer` для электронной коммерции). При добавлении новых HTML-страниц вставляйте тот же фрагмент из [`landing/index.html`](landing/index.html) сразу после `viewport`.

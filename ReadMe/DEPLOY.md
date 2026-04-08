@@ -11,7 +11,7 @@
 
 ## Лендинг (GitHub Pages)
 
-Сайт **не** собирается из каталога `/landing` в настройках GitHub Pages напрямую: публикуется ветка **`gh-pages`**, **корень ветки** = корень сайта (`index.html`, `privacy.html`, `CNAME`, …).
+Сайт **не** собирается из каталога `/landing` в настройках GitHub Pages напрямую: публикуется ветка **`gh-pages`**, **корень ветки** = корень сайта (`index.html`, `privacy.html`, `sitemap.xml`, `robots.txt`, `CNAME`, …).
 
 Исходники на **`main`** лежат в папке [`landing/`](../landing/). После правок:
 
