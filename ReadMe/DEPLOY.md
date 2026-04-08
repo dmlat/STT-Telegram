@@ -28,3 +28,27 @@
 1. Задеплоить бота (`update.sh` или ручной `docker compose`).
 2. В Telegram от имени админа: `/broadcast_test` → проверить у пользователя `280186359`.
 3. `/broadcast` и текст объявления.
+
+### Бот «молчит», не отвечает на /start
+
+1. **Логи контейнера:** `docker compose logs -f bot` — нет ли `BOT_TOKEN is not set`, ошибок БД (`init_db`), падений при старте.
+2. **Один экземпляр polling:** не запускайте второй процесс с тем же токеном (конфликт `getUpdates`).
+3. **Webhook:** если когда-то включали webhook, long polling не получает апдейты. Проверка и снятие без запуска всего бота:
+   - `python scripts/send_test_announcement.py` — если в выводе есть предупреждение про webhook, выполните:
+   - `python scripts/send_test_announcement.py --delete-webhook` — снимет webhook и **сразу отправит** тестовое объявление только пользователю `280186359`. Затем перезапустите контейнер бота.
+
+### Объявление только тестовому id (без массовой рассылки)
+
+С корня репозитория (нужен `BOT_TOKEN`):
+
+```bash
+python scripts/send_test_announcement.py
+```
+
+Опционально снять webhook и отправить текст тесту:
+
+```bash
+python scripts/send_test_announcement.py --delete-webhook
+```
+
+Команда `/broadcast_test` в боте делает то же по смыслу, но требует работающего бота и `ADMIN_ID` в `.env`.

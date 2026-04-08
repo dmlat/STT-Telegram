@@ -165,10 +165,13 @@ async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     user = message.from_user
     await get_or_create_user(user.id, user.username, user.first_name)
-    
+
     stats = await get_user_stats(user.id)
-    await gs_service.update_user_stats(stats)
-    
+    try:
+        await gs_service.update_user_stats(stats)
+    except Exception as e:
+        logging.exception("update_user_stats on /start failed (bot still replies): %s", e)
+
     await message.answer(
         "Привет! Я бот для транскрибации аудио.\n\n"
         "Просто **перешли** мне голосовое сообщение или **отправь** аудиофайл, и я пришлю тебе текст.\n\n"
@@ -816,15 +819,19 @@ async def feedback_reason(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_caption(caption="Спасибо, мы учтём это! 🛠")
     await callback.answer()
 
-# --- Catch-all for text messages ---
-@dp.message(F.text)
+# --- Catch-all for text messages (never swallow /commands) ---
+@dp.message(F.text & ~F.text.startswith("/"))
 async def handle_any_text(message: types.Message):
-    # This handler catches any text message that didn't match previous filters
     await message.answer("Просто пришлите мне аудиофайл или голосовое сообщение!", reply_markup=get_main_menu_kb())
 
+
 async def main():
+    if not BOT_TOKEN or not str(BOT_TOKEN).strip():
+        raise SystemExit("BOT_TOKEN is not set or empty — check .env on the server.")
+
     await init_db()
     gs_service.connect()
+    logging.info("Starting polling…")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
