@@ -396,13 +396,14 @@ async def pay_stars(callback: types.CallbackQuery, state: FSMContext):
     minutes = data.get("minutes")
     amount_rub = data.get("amount")
     amount_xtr = int(callback.data.split("_")[3])
-    
+    expected = rub_price_to_stars(int(amount_rub))
+    if amount_xtr != expected:
+        await callback.answer("Тариф устарел, откройте оплату заново.", show_alert=True)
+        return
+
     await callback.message.answer_invoice(
         title=f"Пакет {minutes} минут",
-        description=(
-            f"Покупка {minutes} минут расшифровки. "
-            f"Ориентир: в Telegram ~182 ₽ за 100 ⭐ при покупке Stars (итог для вас может отличаться)."
-        ),
+        description=f"Покупка {minutes} минут расшифровки.",
         payload=f"buy_{minutes}_{amount_rub}",  # minutes + RUB list price for analytics
         provider_token="", # Empty for Stars
         currency="XTR",

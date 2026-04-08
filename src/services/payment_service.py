@@ -40,14 +40,14 @@ TARIFF_PRICES_RUB: dict[int, int] = {
 
 def rub_price_to_stars(rub: int) -> int:
     """
-    Stars count for invoice (XTR) so planned net revenue matches YooKassa net after fees.
+    Stars for XTR invoice: parity target vs YooKassa net, then round to nearest multiple of 5 (min 5 ⭐).
 
-    Uses round(); switch to math.ceil for a margin-favorable (higher Stars) policy.
-    Reference grid: 59→32, 159→87, 249→136, 990→542, 1850→1013.
+    Base: round(net_rub / STARS_EFFECTIVE_RUB_PER_STAR). Reference packs (₽ → ⭐): 59→30, 159→85,
+    249→135, 990→540, 1850→1015.
     """
     net = rub * YOOKASSA_NET_MULTIPLIER
-    stars = round(net / STARS_EFFECTIVE_RUB_PER_STAR)
-    return max(1, stars)
+    raw = max(1, round(net / STARS_EFFECTIVE_RUB_PER_STAR))
+    return 5 * max(1, round(raw / 5))
 
 
 def get_tariff_price(minutes: int) -> int:
