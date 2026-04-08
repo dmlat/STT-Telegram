@@ -3,10 +3,21 @@ import logging
 from yookassa import Configuration, Payment
 from src.config import YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY
 
-# Initialize YooKassa
-if YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY:
+_yookassa_configured = False
+
+
+def _ensure_yookassa_config() -> bool:
+    """Apply YooKassa credentials lazily (import-time init breaks SQLAlchemy/asyncpg DB pool)."""
+    global _yookassa_configured
+    if _yookassa_configured:
+        return True
+    if not YOOKASSA_SHOP_ID or not YOOKASSA_SECRET_KEY:
+        return False
     Configuration.account_id = YOOKASSA_SHOP_ID
     Configuration.secret_key = YOOKASSA_SECRET_KEY
+    _yookassa_configured = True
+    return True
+
 
 # --- Pricing: equal margin YooKassa vs Telegram Stars (see ReadMe/PROD.md) ---
 # User-facing pack: 100 Stars in official Telegram purchase flow ≈ 182 ₽ (update if rate changes).
@@ -47,6 +58,9 @@ def get_tariff_price(minutes: int) -> int:
 
 
 def create_yookassa_payment(amount: float, description: str, return_url: str, metadata: dict = None):
+    if not _ensure_yookassa_config():
+        logging.error("YooKassa credentials missing")
+        return None
     try:
         idempotence_key = str(uuid.uuid4())
         payment = Payment.create({
@@ -73,6 +87,9 @@ def create_yookassa_payment(amount: float, description: str, return_url: str, me
 
 
 def check_yookassa_payment(payment_id: str):
+    if not _ensure_yookassa_config():
+        logging.error("YooKassa credentials missing")
+        return None
     try:
         payment = Payment.find_one(payment_id)
         return payment.status
