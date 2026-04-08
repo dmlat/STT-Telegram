@@ -2,6 +2,12 @@
 
 Репозиторий содержит код Telegram-бота для расшифровки аудио и статический лендинг сервиса.
 
+## Операторская документация
+
+- [ReadMe/PROD.md](ReadMe/PROD.md) — тарифы, Stars, маржа, рассылка
+- [ReadMe/DEPLOY.md](ReadMe/DEPLOY.md) — Docker, обновление бота, деплой лендинга на GitHub Pages
+- [ReadMe/ENV_EXAMPLE.md](ReadMe/ENV_EXAMPLE.md) — пример `.env`
+
 ## Лендинг и GitHub Pages
 
 - **Публичный сайт:** [https://golosvtekst.ru/](https://golosvtekst.ru/)

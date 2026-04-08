@@ -179,6 +179,15 @@ async def get_transaction(tx_id: int):
     async with async_session() as session:
         return await session.get(Transaction, tx_id)
 
+
+async def get_all_user_ids() -> list[int]:
+    """All Telegram user ids in DB (for admin broadcast)."""
+    async with async_session() as session:
+        stmt = select(User.id)
+        result = await session.execute(stmt)
+        return [row[0] for row in result.all()]
+
+
 async def complete_transaction(tx_id: int, status: str = "success"):
     async with async_session() as session:
         tx = await session.get(Transaction, tx_id)

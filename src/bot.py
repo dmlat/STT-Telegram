@@ -7,19 +7,25 @@ import mutagen
 import traceback
 from openai import OpenAIError
 from aiogram import Bot, Dispatcher, F, types
+from aiogram.exceptions import TelegramForbiddenError
 from aiogram.filters import Command, StateFilter
 from aiogram.types import FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, LabeledPrice, PreCheckoutQuery
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from src.config import BOT_TOKEN, YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY, ADMIN_ID
 from src.services.db_service import (
-    init_db, get_or_create_user, add_voice_message, get_user_stats, 
-    add_review, check_user_limit, update_user_usage, 
-    create_transaction, complete_transaction, get_transaction
+    init_db, get_or_create_user, add_voice_message, get_user_stats,
+    add_review, check_user_limit, update_user_usage,
+    create_transaction, complete_transaction, get_transaction, get_all_user_ids,
 )
 from src.services.google_sheets_service import gs_service
 from src.services.openai_service import transcribe_audio
-from src.services.payment_service import get_tariff_price, create_yookassa_payment, check_yookassa_payment
+from src.services.payment_service import (
+    get_tariff_price,
+    rub_price_to_stars,
+    create_yookassa_payment,
+    check_yookassa_payment,
+)
 from datetime import datetime, timezone
 
 # Configure logging
@@ -42,6 +48,22 @@ class PaymentState(StatesGroup):
     waiting_for_custom_minutes = State()
     waiting_for_payment_method = State() # amount, minutes in data
 
+
+class BroadcastState(StatesGroup):
+    waiting_for_text = State()
+
+
+# Mandatory test recipient before mass broadcast (see ReadMe/PROD.md)
+BROADCAST_TEST_USER_ID = 280186359
+BROADCAST_ANNOUNCEMENT_TEXT = (
+    "Теперь доступны пакеты минут для расшифровки голоса в текст. Спасибо за ожидание."
+)
+
+
+def _is_admin(user_id: int) -> bool:
+    return ADMIN_ID is not None and user_id == ADMIN_ID
+
+
 # --- Keyboards ---
 def get_main_menu_kb():
     return ReplyKeyboardMarkup(
@@ -54,24 +76,24 @@ def get_main_menu_kb():
     )
 
 def get_tariffs_kb():
+    p = get_tariff_price
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="10 минут - 49 ₽", callback_data="buy_10")],
-        [InlineKeyboardButton(text="30 минут - 129 ₽", callback_data="buy_30")],
-        [InlineKeyboardButton(text="1 час - 199 ₽", callback_data="buy_60")],
-        [InlineKeyboardButton(text="5 часов - 790 ₽", callback_data="buy_300")],
-        [InlineKeyboardButton(text="10 часов - 1490 ₽", callback_data="buy_600")],
+        [InlineKeyboardButton(text=f"10 минут — {p(10)} ₽", callback_data="buy_10")],
+        [InlineKeyboardButton(text=f"30 минут — {p(30)} ₽", callback_data="buy_30")],
+        [InlineKeyboardButton(text=f"1 час — {p(60)} ₽", callback_data="buy_60")],
+        [InlineKeyboardButton(text=f"5 часов — {p(300)} ₽", callback_data="buy_300")],
+        [InlineKeyboardButton(text=f"10 часов — {p(600)} ₽", callback_data="buy_600")],
         [InlineKeyboardButton(text="✏️ Свой тариф", callback_data="buy_custom")],
-        [InlineKeyboardButton(text="🔙 Закрыть", callback_data="payment_close")]
+        [InlineKeyboardButton(text="🔙 Закрыть", callback_data="payment_close")],
     ])
 
+
 def get_payment_method_kb(amount_rub: int):
-    # Stars amount: approx 1 XTR = 2 RUB (User buys stars from TG, we receive stars)
-    # We invoice in XTR. Let's say 2 RUB per XTR to cover our costs/markup.
-    amount_xtr = math.ceil(amount_rub / 2) 
+    stars = rub_price_to_stars(amount_rub)
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"YooKassa ({amount_rub} ₽)", callback_data="pay_method_yookassa")],
-        [InlineKeyboardButton(text=f"Telegram Stars ({amount_xtr} ⭐️)", callback_data=f"pay_method_stars_{amount_xtr}")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="payment_back_to_tariffs")]
+        [InlineKeyboardButton(text=f"Telegram Stars ({stars} ⭐)", callback_data=f"pay_method_stars_{stars}")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="payment_back_to_tariffs")],
     ])
 
 def get_check_payment_kb(payment_id: str, url: str):
@@ -153,8 +175,8 @@ async def cmd_start(message: types.Message, state: FSMContext):
         "📂 **Поддерживаемые форматы:**\n"
         "- Голосовые сообщения Telegram\n"
         "- Аудиофайлы: `mp3`, `ogg`, `wav`, `m4a`\n\n"
-        "🎁 **Бесплатно:** 5 минут на пробу.\n"
-        "Далее — по тарифам (от 49₽).",
+        "🎁 **Бесплатно:** 5 минут на пробу (один раз на аккаунт).\n"
+        "Далее — по тарифам (от 59 ₽).",
         parse_mode="Markdown",
         reply_markup=get_main_menu_kb()
     )
@@ -371,8 +393,11 @@ async def pay_stars(callback: types.CallbackQuery, state: FSMContext):
     
     await callback.message.answer_invoice(
         title=f"Пакет {minutes} минут",
-        description=f"Покупка {minutes} минут расшифровки",
-        payload=f"buy_{minutes}_{amount_rub}", # Payload to identify
+        description=(
+            f"Покупка {minutes} минут расшифровки. "
+            f"Ориентир: в Telegram ~182 ₽ за 100 ⭐ при покупке Stars (итог для вас может отличаться)."
+        ),
+        payload=f"buy_{minutes}_{amount_rub}",  # minutes + RUB list price for analytics
         provider_token="", # Empty for Stars
         currency="XTR",
         prices=[LabeledPrice(label=f"{minutes} мин", amount=amount_xtr)],
@@ -409,6 +434,80 @@ async def successful_payment_handler(message: types.Message):
         f"На ваш баланс начислено **{minutes} минут**.",
         parse_mode="Markdown"
     )
+
+
+# --- Admin broadcast (see ReadMe/PROD.md) ---
+@dp.message(Command("broadcast_test"))
+async def cmd_broadcast_test(message: types.Message, bot: Bot):
+    if not _is_admin(message.from_user.id):
+        return
+    try:
+        await bot.send_message(BROADCAST_TEST_USER_ID, BROADCAST_ANNOUNCEMENT_TEXT)
+        await message.answer(
+            f"Тестовое сообщение отправлено пользователю `{BROADCAST_TEST_USER_ID}`.",
+            parse_mode="Markdown",
+        )
+    except TelegramForbiddenError:
+        await message.answer(
+            "Не удалось доставить: пользователь недоступен или заблокировал бота."
+        )
+    except Exception as e:
+        logging.exception("broadcast_test failed")
+        await message.answer(f"Ошибка отправки: {e}")
+
+
+@dp.message(Command("broadcast"))
+async def cmd_broadcast(message: types.Message, state: FSMContext):
+    if not _is_admin(message.from_user.id):
+        return
+    await state.set_state(BroadcastState.waiting_for_text)
+    await message.answer(
+        "Отправьте **текст рассылки** следующим сообщением.\n"
+        "/cancel_broadcast — отмена.\n\n"
+        "Перед массовой рассылкой всегда делайте `/broadcast_test`.",
+        parse_mode="Markdown",
+    )
+
+
+@dp.message(Command("cancel_broadcast"), StateFilter(BroadcastState.waiting_for_text))
+async def cmd_cancel_broadcast(message: types.Message, state: FSMContext):
+    if not _is_admin(message.from_user.id):
+        return
+    await state.clear()
+    await message.answer("Рассылка отменена.")
+
+
+@dp.message(
+    StateFilter(BroadcastState.waiting_for_text),
+    F.text,
+    ~F.text.startswith("/"),
+)
+async def run_broadcast(message: types.Message, state: FSMContext, bot: Bot):
+    if not _is_admin(message.from_user.id):
+        await state.clear()
+        return
+    text = message.text.strip()
+    if not text:
+        await message.answer("Пустой текст. Отправьте текст или /cancel_broadcast.")
+        return
+    await state.clear()
+    user_ids = await get_all_user_ids()
+    ok, fail = 0, 0
+    for uid in user_ids:
+        try:
+            await bot.send_message(uid, text)
+            ok += 1
+        except TelegramForbiddenError:
+            fail += 1
+            logging.info("Broadcast skip (forbidden): user_id=%s", uid)
+        except Exception as e:
+            fail += 1
+            logging.warning("Broadcast fail user_id=%s: %s", uid, e)
+        await asyncio.sleep(0.05)
+    await message.answer(
+        f"Готово. Отправлено: {ok}, ошибок/пропусков: {fail}, всего в базе: {len(user_ids)}."
+    )
+
 
 # --- Cancel Handler ---
 @dp.message(F.text == "🔙 Назад", StateFilter(FeedbackState))
